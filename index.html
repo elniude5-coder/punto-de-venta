@@ -9,6 +9,7 @@
 <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <style>
   :root{
     --paper:#FAF6EF;
@@ -113,23 +114,6 @@
   .scanner-top button{background:rgba(255,255,255,.15);color:#fff;border:none;width:36px;height:36px;border-radius:100px;font-size:16px;}
   .scanner-hint{color:#fff;text-align:center;padding:14px;font-size:14px;opacity:.85;}
 
-  #receipt{display:none;}
-  @media print{
-    body *{visibility:hidden;}
-    #receipt, #receipt *{visibility:visible;}
-    #receipt{display:block;position:absolute;top:0;left:0;width:80mm;font-family:'Courier New',monospace;color:#000;padding:4px 6px;}
-    #receipt .center{text-align:center;}
-    #receipt .biz-name{font-size:16px;font-weight:700;}
-    #receipt .biz-sub{font-size:11px;}
-    #receipt .meta{font-size:11px;margin:1px 0;}
-    #receipt hr{border:none;border-top:1px dashed #000;margin:5px 0;}
-    #receipt .item-row1{display:flex;justify-content:space-between;font-size:12px;font-weight:700;}
-    #receipt .item-row2{display:flex;justify-content:space-between;font-size:10px;color:#000;margin-bottom:4px;}
-    #receipt .sum-row{display:flex;justify-content:space-between;font-size:12px;margin:2px 0;}
-    #receipt .grand{font-size:14px;font-weight:700;}
-    #receipt .thanks{text-align:center;font-size:11px;margin-top:8px;}
-    @page{margin:0;}
-  }
 </style>
 </head>
 <body>
@@ -170,8 +154,6 @@
     <div class="scanner-hint">Apunta la cámara al código de barras o QR del producto</div>
   </div>
 </div>
-
-<div id="receipt"></div>
 
 <script>
 // =====================================================================
@@ -454,43 +436,101 @@ async function confirmSale(){
   const sale = {id:uid(), date:Date.now(), items, total, client, invoice};
   sales.push(sale);
 
-  // Imprimir de inmediato, dentro del mismo toque del botón (Safari bloquea
-  // el diálogo de impresión si se llama después de esperas de red).
-  printReceipt(sale);
+  // Generar y compartir el PDF de inmediato, dentro del mismo toque del
+  // botón (así el menú de compartir de iOS no se bloquea).
+  handleReceipt(sale);
   cart = {};
   closeSheet();
   setScreen('vender');
 
-  // Guardar en la base de datos después, sin bloquear la impresión.
+  // Guardar en la base de datos después, sin bloquear lo anterior.
   await saveProducts();
   await saveSales();
   await saveInvoiceCounter();
 }
 
-function printReceipt(sale){
+function generateReceiptPdf(sale){
+  const { jsPDF } = window.jspdf;
+  const widthMm = 80;
+  const marginMm = 4;
+  const lh = 4.6;
+  let lines = 3; // top padding + biz name + gap
+  if(settings.address) lines += 1;
+  if(settings.phone) lines += 1;
+  lines += 4; // fecha, factura
+  if(sale.client && sale.client.name) lines += 1;
+  if(sale.client && sale.client.address) lines += 1;
+  lines += sale.items.length * 2;
+  lines += 6; // subtotal/unidades/total/thanks/paddings
+  const heightMm = Math.max(50, marginMm*2 + lines*lh);
+
+  const doc = new jsPDF({unit:'mm', format:[widthMm, heightMm]});
+  const cx = widthMm/2;
+  let y = marginMm + 3;
+
+  doc.setFont('courier','bold');
+  doc.setFontSize(13);
+  doc.text(settings.storeName||'Mi Tienda', cx, y, {align:'center'}); y += lh;
+  doc.setFontSize(9);
+  if(settings.address){ doc.text(settings.address, cx, y, {align:'center'}); y += lh-1; }
+  if(settings.phone){ doc.text('Tel: '+settings.phone, cx, y, {align:'center'}); y += lh-1; }
+  y += 1;
+  doc.setLineDash([0.8,0.8],0);
+  doc.line(marginMm, y, widthMm-marginMm, y); y += lh-1.5;
+  doc.setLineDash([],0);
+
   const d = new Date(sale.date);
-  const fecha = d.toLocaleDateString('es');
-  const totalUnidades = sale.items.reduce((a,it)=>a+it.qty,0);
-  let html = `<div class="center biz-name">${escapeHtml(settings.storeName||'Mi Tienda')}</div>`;
-  if(settings.address) html += `<div class="center biz-sub">${escapeHtml(settings.address)}</div>`;
-  if(settings.phone) html += `<div class="center biz-sub">Tel: ${escapeHtml(settings.phone)}</div>`;
-  html += `<hr>`;
-  html += `<div class="meta">Fecha: ${fecha}</div>`;
-  html += `<div class="meta">Factura No.: ${sale.invoice}</div>`;
-  if(sale.client && sale.client.name) html += `<div class="meta">Cliente: ${escapeHtml(sale.client.name)}</div>`;
-  if(sale.client && sale.client.address) html += `<div class="meta">Dirección: ${escapeHtml(sale.client.address)}</div>`;
-  html += `<hr>`;
+  doc.text('Fecha: '+d.toLocaleDateString('es'), marginMm, y); y += lh-1.5;
+  doc.text('Factura No.: '+sale.invoice, marginMm, y); y += lh-1.5;
+  if(sale.client && sale.client.name){ doc.text('Cliente: '+sale.client.name, marginMm, y); y += lh-1.5; }
+  if(sale.client && sale.client.address){ doc.text('Dirección: '+sale.client.address, marginMm, y); y += lh-1.5; }
+  y += 1;
+  doc.setLineDash([0.8,0.8],0);
+  doc.line(marginMm, y, widthMm-marginMm, y); y += lh-1.5;
+  doc.setLineDash([],0);
+
   sale.items.forEach(it=>{
-    html += `<div class="item-row1"><span>${it.qty} ${escapeHtml(it.name)}</span><span>${money(it.price*it.qty)}</span></div>`;
-    html += `<div class="item-row2"><span>${money(it.price)}${it.code?' · '+escapeHtml(it.code):''}</span></div>`;
+    doc.setFontSize(9);
+    doc.text(`${it.qty} ${it.name}`, marginMm, y);
+    doc.text(money(it.price*it.qty), widthMm-marginMm, y, {align:'right'});
+    y += lh-1.8;
+    doc.setFontSize(8);
+    doc.text(money(it.price) + (it.code?'  '+it.code:''), marginMm, y);
+    y += lh-1.5;
   });
-  html += `<hr>`;
-  html += `<div class="sum-row"><span>Subtotal</span><span>${money(sale.total)}</span></div>`;
-  html += `<div class="sum-row"><span>Total Unidades</span><span>${totalUnidades}</span></div>`;
-  html += `<div class="sum-row grand"><span>TOTAL A PAGAR</span><span>${money(sale.total)}</span></div>`;
-  html += `<div class="thanks">¡Gracias por su compra!</div>`;
-  document.getElementById('receipt').innerHTML = html;
-  window.print();
+  y += 0.5;
+  doc.setLineDash([0.8,0.8],0);
+  doc.line(marginMm, y, widthMm-marginMm, y); y += lh-1.5;
+  doc.setLineDash([],0);
+
+  const totalUnidades = sale.items.reduce((a,it)=>a+it.qty,0);
+  doc.setFontSize(9);
+  doc.text('Subtotal', marginMm, y); doc.text(money(sale.total), widthMm-marginMm, y, {align:'right'}); y += lh-1.5;
+  doc.text('Total Unidades', marginMm, y); doc.text(String(totalUnidades), widthMm-marginMm, y, {align:'right'}); y += lh-1.5;
+  doc.setFontSize(11);
+  doc.text('TOTAL A PAGAR', marginMm, y); doc.text(money(sale.total), widthMm-marginMm, y, {align:'right'}); y += lh+0.5;
+  doc.setFontSize(9);
+  doc.text('¡Gracias por su compra!', cx, y, {align:'center'});
+
+  return doc;
+}
+
+async function handleReceipt(sale){
+  const doc = generateReceiptPdf(sale);
+  const blob = doc.output('blob');
+  const fileName = `factura-${sale.invoice}.pdf`;
+  try{
+    const file = new File([blob], fileName, {type:'application/pdf'});
+    if(navigator.canShare && navigator.canShare({files:[file]})){
+      await navigator.share({files:[file], title:fileName});
+      return;
+    }
+  }catch(e){ /* si cancela o falla, cae a la descarga de abajo */ }
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = fileName;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url), 8000);
 }
 
 // ---- settings ----

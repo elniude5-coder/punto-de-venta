@@ -744,6 +744,7 @@ let lastScanCode = null, lastScanTime = 0;
 
 function openScanner(mode){
   scannerMode = mode || 'form';
+  lastScanCode = null;
   document.getElementById('scannerOverlay').classList.add('show');
   document.querySelector('#scannerOverlay .scanner-hint').textContent = scannerMode==='sell'
     ? 'Apunta la cámara al código del producto para agregarlo al carrito'
@@ -778,12 +779,10 @@ function onScanSuccess(decodedText){
     stopScanner();
     return;
   }
-  // Modo venta: agregar directo al carrito, evitando duplicados del mismo
-  // código si la cámara lo vuelve a leer en el siguiente cuadro.
-  const now = Date.now();
-  if(decodedText === lastScanCode && (now - lastScanTime) < 1500) return;
+  // Modo venta: agregar el producto y cerrar la cámara, para no seguir
+  // agregando el mismo código varias veces mientras sigue encendida.
+  if(scannerMode === 'sell' && lastScanCode !== null) return; // ya se procesó un código en esta sesión de escaneo
   lastScanCode = decodedText;
-  lastScanTime = now;
   const hint = document.querySelector('#scannerOverlay .scanner-hint');
   const p = products.find(x => x.code && x.code === decodedText);
   if(!p){
@@ -794,6 +793,7 @@ function onScanSuccess(decodedText){
     addToCart(p.id);
     hint.textContent = `✅ Agregado: ${p.name}`;
   }
+  setTimeout(stopScanner, 800);
 }
 
 function stopScanner(){

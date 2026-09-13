@@ -117,7 +117,7 @@
   @media print{
     body *{visibility:hidden;}
     #receipt, #receipt *{visibility:visible;}
-    #receipt{display:block;position:absolute;top:0;left:0;width:76mm;font-family:'Courier New',monospace;color:#000;padding:4px 6px;}
+    #receipt{display:block;position:absolute;top:0;left:0;width:80mm;font-family:'Courier New',monospace;color:#000;padding:4px 6px;}
     #receipt .center{text-align:center;}
     #receipt .biz-name{font-size:16px;font-weight:700;}
     #receipt .biz-sub{font-size:11px;}
@@ -278,7 +278,7 @@ function renderVender(main){
 
   html += `<div style="padding:0 16px 10px;">
     <button class="tab-chip" style="width:100%;text-align:left;display:flex;align-items:center;gap:8px;" onclick="openClientPicker()">
-      👤 <span style="font-weight:700;">${currentClient ? escapeHtml(currentClient) : 'Sin cliente (toca para agregar)'}</span>
+      👤 <span style="font-weight:700;">${currentClient ? escapeHtml(currentClient.name) : 'Sin cliente (toca para agregar)'}</span>
     </button>
   </div>`;
 
@@ -333,7 +333,7 @@ function renderHistorial(main){
   main.innerHTML = sorted.map(s=>{
     const d = new Date(s.date);
     const when = d.toLocaleDateString('es', {day:'2-digit',month:'short'}) + ' · ' + d.toLocaleTimeString('es',{hour:'2-digit',minute:'2-digit'});
-    return `<div class="history-item"><div><div class="amt">${money(s.total)}</div><div class="when">Factura ${s.invoice} · ${when} · ${s.items.length} producto(s)</div></div></div>`;
+    return `<div class="history-item"><div><div class="amt">${money(s.total)}</div><div class="when">Factura ${s.invoice} · ${when} · ${s.items.length} producto(s)${s.client&&s.client.name?' · 👤 '+escapeHtml(s.client.name):''}</div></div></div>`;
   }).join('');
 }
 
@@ -373,7 +373,7 @@ function openCart(){
       </div>`;
     }).join('');
     body += `<div class="stock-row" style="border:none;padding:10px 0;cursor:pointer;" onclick="closeSheet();openClientPicker();">
-      <div class="info"><div class="cat">Cliente</div><div class="nm">${currentClient ? escapeHtml(currentClient) : 'Sin cliente'}</div></div>
+      <div class="info"><div class="cat">Cliente</div><div class="nm">${currentClient ? escapeHtml(currentClient.name) : 'Sin cliente'}</div></div>
       <div style="color:var(--muted);">Cambiar ›</div>
     </div>`;
     body += `<div class="total-row"><div class="label">Total</div><div class="amount">${money(cartTotalValue())}</div></div>
@@ -395,37 +395,42 @@ function changeQty(id, delta){
 function openClientPicker(){
   let body = `<div class="sheet-close"><button onclick="closeSheet()">✕</button></div><h2>¿Para quién es esta venta?</h2>`;
   if(clients.length){
-    body += clients.map(c => `<div class="stock-row" onclick="selectClient('${c.replace(/'/g,"\\'")}')">
-      <div class="info"><div class="nm">👤 ${escapeHtml(c)}</div></div>
-      <button type="button" onclick="event.stopPropagation();removeClient('${c.replace(/'/g,"\\'")}')" style="border:none;background:none;color:var(--danger);font-weight:700;">Eliminar</button>
+    body += clients.map((c,i) => `<div class="stock-row" onclick="selectClient(${i})">
+      <div class="info"><div class="nm">👤 ${escapeHtml(c.name)}</div>${c.address?`<div class="cat">${escapeHtml(c.address)}</div>`:''}</div>
+      <button type="button" onclick="event.stopPropagation();removeClient(${i})" style="border:none;background:none;color:var(--danger);font-weight:700;">Eliminar</button>
     </div>`).join('');
   } else {
     body += `<div class="empty-msg">Todavía no tienes clientes guardados.</div>`;
   }
   body += `<label>Agregar nuevo cliente</label>
     <input id="f_newclient" placeholder="Nombre del cliente">
+    <label>Dirección (opcional, sale en la factura)</label>
+    <input id="f_newclient_addr" placeholder="Dirección del cliente">
     <button class="btn btn-primary" onclick="addClient()">Agregar y usar</button>`;
   if(currentClient){
     body += `<button class="btn btn-outline" onclick="currentClient='';closeSheet();render();">Vender sin cliente</button>`;
   }
   showSheet(body);
 }
-function selectClient(name){
-  currentClient = name;
+function selectClient(i){
+  currentClient = clients[i];
   closeSheet();
   render();
 }
 async function addClient(){
   const name = document.getElementById('f_newclient').value.trim();
+  const address = document.getElementById('f_newclient_addr').value.trim();
   if(!name) return;
-  if(!clients.includes(name)) clients.push(name);
+  const existing = clients.find(c=>c.name===name);
+  if(existing){ existing.address = address; }
+  else { clients.push({name, address}); }
   await saveAll();
-  currentClient = name;
+  currentClient = clients.find(c=>c.name===name);
   closeSheet();
   render();
 }
-async function removeClient(name){
-  clients = clients.filter(c=>c!==name);
+async function removeClient(i){
+  clients.splice(i,1);
   await saveAll();
   openClientPicker();
 }
@@ -448,13 +453,18 @@ async function confirmSale(){
   const invoice = String(invoiceCounter).padStart(4,'0');
   const sale = {id:uid(), date:Date.now(), items, total, client, invoice};
   sales.push(sale);
-  await saveProducts();
-  await saveSales();
-  await saveInvoiceCounter();
+
+  // Imprimir de inmediato, dentro del mismo toque del botón (Safari bloquea
+  // el diálogo de impresión si se llama después de esperas de red).
   printReceipt(sale);
   cart = {};
   closeSheet();
   setScreen('vender');
+
+  // Guardar en la base de datos después, sin bloquear la impresión.
+  await saveProducts();
+  await saveSales();
+  await saveInvoiceCounter();
 }
 
 function printReceipt(sale){
@@ -467,7 +477,8 @@ function printReceipt(sale){
   html += `<hr>`;
   html += `<div class="meta">Fecha: ${fecha}</div>`;
   html += `<div class="meta">Factura No.: ${sale.invoice}</div>`;
-  if(sale.client) html += `<div class="meta">Cliente: ${escapeHtml(sale.client)}</div>`;
+  if(sale.client && sale.client.name) html += `<div class="meta">Cliente: ${escapeHtml(sale.client.name)}</div>`;
+  if(sale.client && sale.client.address) html += `<div class="meta">Dirección: ${escapeHtml(sale.client.address)}</div>`;
   html += `<hr>`;
   sale.items.forEach(it=>{
     html += `<div class="item-row1"><span>${it.qty} ${escapeHtml(it.name)}</span><span>${money(it.price*it.qty)}</span></div>`;
@@ -479,7 +490,7 @@ function printReceipt(sale){
   html += `<div class="sum-row grand"><span>TOTAL A PAGAR</span><span>${money(sale.total)}</span></div>`;
   html += `<div class="thanks">¡Gracias por su compra!</div>`;
   document.getElementById('receipt').innerHTML = html;
-  setTimeout(()=>window.print(), 150);
+  window.print();
 }
 
 // ---- settings ----

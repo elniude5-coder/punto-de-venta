@@ -185,6 +185,8 @@ let cart = {};
 let currentClient = '';
 let screen = 'vender';
 let activeCategory = 'Todas';
+let sellSearch = '';
+let sellSearchFocused = false;
 const EMOJIS = ['🍞','🥛','💧','🍫','🧴','🧼','🧃','🥫','🍬','🧻','🥤','🧯','🔋','🧦','🍪','📦'];
 
 async function loadData(){
@@ -228,6 +230,7 @@ function escapeHtml(str){ const d = document.createElement('div'); d.textContent
 
 function setScreen(s){
   screen = s;
+  sellSearchFocused = false;
   document.getElementById('tabVender').classList.toggle('active', s==='vender');
   document.getElementById('tabProductos').classList.toggle('active', s==='productos');
   document.getElementById('tabHistorial').classList.toggle('active', s==='historial');
@@ -258,16 +261,29 @@ function renderVender(main){
     `<button class="tab-chip ${c===activeCategory?'active':''}" onclick="activeCategory='${c.replace(/'/g,"\\'")}';render()">${c}</button>`
   ).join('') + `</div>`;
 
+  html += `<div style="padding:14px 16px 0;">
+    <div class="field-row">
+      <input id="sellSearchInput" value="${escapeHtml(sellSearch)}" oninput="onSellSearchInput(this)" placeholder="Buscar producto...">
+      <button type="button" class="icon-btn" onclick="openScanner('sell')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7V4h3M20 7V4h-3M4 17v3h3M20 17v3h-3"/><path d="M7 8v8M11 8v8M14 8v8M17 8v8"/></svg>
+      </button>
+    </div>
+  </div>`;
+
   html += `<div style="padding:0 16px 10px;">
     <button class="tab-chip" style="width:100%;text-align:left;display:flex;align-items:center;gap:8px;" onclick="openClientPicker()">
       👤 <span style="font-weight:700;">${currentClient ? escapeHtml(currentClient.name) : 'Sin cliente (toca para agregar)'}</span>
     </button>
   </div>`;
 
-  const list = products.filter(p => activeCategory==='Todas' || (p.category||'General')===activeCategory);
+  const q = sellSearch.trim().toLowerCase();
+  const list = products.filter(p =>
+    (activeCategory==='Todas' || (p.category||'General')===activeCategory) &&
+    (q==='' || p.name.toLowerCase().includes(q) || (p.code||'').toLowerCase().includes(q))
+  );
 
   if(list.length===0){
-    html += `<div class="empty-msg">Todavía no hay productos aquí.<br>Ve a la pestaña "Productos" para agregar el primero.</div>`;
+    html += `<div class="empty-msg">${q ? 'No se encontró ningún producto con ese nombre o código.' : 'Todavía no hay productos aquí.<br>Ve a la pestaña "Productos" para agregar el primero.'}</div>`;
   } else {
     html += `<div class="grid">` + list.map(p => {
       const low = p.stock <= 3;
@@ -282,6 +298,17 @@ function renderVender(main){
     }).join('') + `</div>`;
   }
   main.innerHTML = html;
+
+  if(sellSearchFocused){
+    const el = document.getElementById('sellSearchInput');
+    if(el){ el.focus(); const v = el.value; el.setSelectionRange(v.length, v.length); }
+  }
+}
+
+function onSellSearchInput(el){
+  sellSearch = el.value;
+  sellSearchFocused = true;
+  render();
 }
 
 function renderProductos(main){
@@ -315,8 +342,33 @@ function renderHistorial(main){
   main.innerHTML = sorted.map(s=>{
     const d = new Date(s.date);
     const when = d.toLocaleDateString('es', {day:'2-digit',month:'short'}) + ' · ' + d.toLocaleTimeString('es',{hour:'2-digit',minute:'2-digit'});
-    return `<div class="history-item"><div><div class="amt">${money(s.total)}</div><div class="when">Factura ${s.invoice} · ${when} · ${s.items.length} producto(s)${s.client&&s.client.name?' · 👤 '+escapeHtml(s.client.name):''}</div></div></div>`;
+    return `<div class="history-item" style="cursor:pointer;" onclick="openSaleDetail('${s.id}')"><div><div class="amt">${money(s.total)}</div><div class="when">Factura ${s.invoice} · ${when} · ${s.items.length} producto(s)${s.client&&s.client.name?' · 👤 '+escapeHtml(s.client.name):''}</div></div><div style="color:var(--muted);font-size:20px;align-self:center;">›</div></div>`;
   }).join('');
+}
+
+function openSaleDetail(id){
+  const s = sales.find(x=>x.id===id);
+  if(!s) return;
+  const d = new Date(s.date);
+  const when = d.toLocaleDateString('es') + ' · ' + d.toLocaleTimeString('es',{hour:'2-digit',minute:'2-digit'});
+  let body = `<div class="sheet-close"><button onclick="closeSheet()">✕</button></div>
+    <h2>Factura ${s.invoice}</h2>
+    <div style="color:var(--muted);font-size:14px;margin:-8px 0 12px;">${when}${s.client&&s.client.name?' · 👤 '+escapeHtml(s.client.name):''}</div>`;
+  s.items.forEach(it=>{
+    body += `<div class="cart-line">
+      <div class="info"><div class="name">${escapeHtml(it.name)}</div><div class="unit">${it.qty} x ${money(it.price)}</div></div>
+      <div class="line-total">${money(it.price*it.qty)}</div>
+    </div>`;
+  });
+  body += `<div class="total-row"><div class="label">Total</div><div class="amount">${money(s.total)}</div></div>
+    <button class="btn btn-primary" onclick="reprintSale('${s.id}')">📄 Descargar / compartir factura</button>`;
+  showSheet(body);
+}
+
+async function reprintSale(id){
+  const s = sales.find(x=>x.id===id);
+  if(!s) return;
+  await handleReceipt(s);
 }
 
 // ---- cart ----
@@ -687,8 +739,15 @@ async function deleteProduct(){
 
 // ---- barcode / qr scanner ----
 let html5QrCode = null;
-function openScanner(){
+let scannerMode = 'form';
+let lastScanCode = null, lastScanTime = 0;
+
+function openScanner(mode){
+  scannerMode = mode || 'form';
   document.getElementById('scannerOverlay').classList.add('show');
+  document.querySelector('#scannerOverlay .scanner-hint').textContent = scannerMode==='sell'
+    ? 'Apunta la cámara al código del producto para agregarlo al carrito'
+    : 'Apunta la cámara al código de barras o QR del producto';
   html5QrCode = new Html5Qrcode("scannerRegion", {
     formatsToSupport: [
       Html5QrcodeSupportedFormats.UPC_A,
@@ -705,21 +764,44 @@ function openScanner(){
   html5QrCode.start(
     { facingMode: "environment" },
     { fps: 10, qrbox: { width: 270, height: 120 } },
-    (decodedText) => {
-      const codeInput = document.getElementById('f_code');
-      if(codeInput) codeInput.value = decodedText;
-      stopScanner();
-    },
+    (decodedText) => onScanSuccess(decodedText),
     () => {}
   ).catch(() => {
     document.querySelector('#scannerOverlay .scanner-hint').textContent = 'No se pudo abrir la cámara. Revisa los permisos de cámara en Ajustes.';
   });
 }
+
+function onScanSuccess(decodedText){
+  if(scannerMode === 'form'){
+    const codeInput = document.getElementById('f_code');
+    if(codeInput) codeInput.value = decodedText;
+    stopScanner();
+    return;
+  }
+  // Modo venta: agregar directo al carrito, evitando duplicados del mismo
+  // código si la cámara lo vuelve a leer en el siguiente cuadro.
+  const now = Date.now();
+  if(decodedText === lastScanCode && (now - lastScanTime) < 1500) return;
+  lastScanCode = decodedText;
+  lastScanTime = now;
+  const hint = document.querySelector('#scannerOverlay .scanner-hint');
+  const p = products.find(x => x.code && x.code === decodedText);
+  if(!p){
+    hint.textContent = `❌ Código no encontrado: ${decodedText}`;
+  } else if(p.stock <= (cart[p.id]||0)){
+    hint.textContent = `⚠️ ${p.name}: ya no queda disponible`;
+  } else {
+    addToCart(p.id);
+    hint.textContent = `✅ Agregado: ${p.name}`;
+  }
+}
+
 function stopScanner(){
   if(html5QrCode){
     html5QrCode.stop().then(()=>{ html5QrCode.clear(); html5QrCode=null; }).catch(()=>{});
   }
   document.getElementById('scannerOverlay').classList.remove('show');
+  if(scannerMode === 'sell') render();
 }
 
 // ---- sheet helper ----
